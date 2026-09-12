@@ -92,6 +92,60 @@ não é exposto.
 }
 ```
 
+### Resposta do saldo
+
+As contas internas com saldo e bloqueio zerados são removidas automaticamente.
+
+```json
+{
+  "success": true,
+  "message": "Saldo consultado com sucesso.",
+  "wallet_available": true,
+  "balance": {
+    "available": 0.09,
+    "blocked": 0.0,
+    "available_for_discounts": 0.09,
+    "currency": "BRL",
+    "formatted_available": "R$ 0,09",
+    "formatted_blocked": "R$ 0,00"
+  },
+  "sources": [
+    {
+      "id": "user-cashin-pix",
+      "amount": 0.09,
+      "blocked": 0.0,
+      "formatted_amount": "R$ 0,09",
+      "tags": ["available"]
+    }
+  ]
+}
+```
+
+### Resposta da consulta de chave
+
+```json
+{
+  "success": true,
+  "found": true,
+  "message": "Chave Pix encontrada.",
+  "pix_id": "pix-exemplo",
+  "receiver": {
+    "name": "Cliente Exemplo",
+    "document": "***.456.789-**",
+    "owner_type": "NATURAL_PERSON",
+    "same_owner": false,
+    "key": "12345678909",
+    "key_type": "CPF",
+    "institution": {
+      "name": "BANCO EXEMPLO",
+      "ispb": "12345678",
+      "branch": "***",
+      "account_number": "*****"
+    }
+  }
+}
+```
+
 ## Renovação Automática de Tokens
 
 A API renova o Bearer Token automaticamente em 2 etapas:

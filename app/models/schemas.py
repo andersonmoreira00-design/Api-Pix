@@ -74,6 +74,8 @@ class InstitutionInfo(BaseModel):
 class PixReceiverInfo(BaseModel):
     name:        Optional[str] = None
     document:    Optional[str] = None
+    owner_type:  Optional[str] = None
+    same_owner:  Optional[bool] = None
     key:         Optional[str] = None
     key_type:    Optional[str] = None
     institution: Optional[InstitutionInfo] = None
@@ -100,6 +102,39 @@ class PixResponse(BaseModel):
     message:     str
     transaction: PixTransactionInfo
     receiver:    Optional[PixReceiverInfo] = None
+
+
+class BalanceInfo(BaseModel):
+    available:               float
+    blocked:                 float
+    available_for_discounts: float
+    currency:                str
+    formatted_available:     str
+    formatted_blocked:       str
+
+
+class BalanceSource(BaseModel):
+    id:               str
+    amount:           float
+    blocked:          float
+    formatted_amount: str
+    tags:             List[str] = Field(default_factory=list)
+
+
+class BalanceResponse(BaseModel):
+    success:          bool
+    message:          str
+    wallet_available: bool
+    balance:          BalanceInfo
+    sources:          List[BalanceSource] = Field(default_factory=list)
+
+
+class PixLookupResponse(BaseModel):
+    success:  bool
+    found:    bool
+    message:  str
+    pix_id:   Optional[str] = None
+    receiver: PixReceiverInfo
 
 
 class TokenStatus(BaseModel):

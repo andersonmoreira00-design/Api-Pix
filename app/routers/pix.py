@@ -19,6 +19,8 @@ from app.models.schemas import (
     PixKeyRequest,
     PixContactRequest,
     PixResponse,
+    BalanceResponse,
+    PixLookupResponse,
     HistoryResponse,
     TransactionRecord,
     IntegrityHashResponse,
@@ -41,6 +43,113 @@ def _format_brl(amount: str) -> str:
     formatted = f"{value:,.2f}"
     formatted = formatted.replace(",", "_").replace(".", ",").replace("_", ".")
     return f"R$ {formatted}"
+
+
+def _as_float(value) -> float:
+    """Converte valores monetários do provedor sem propagar formatos inválidos."""
+    try:
+        return float(Decimal(str(value)))
+    except (InvalidOperation, TypeError, ValueError):
+        return 0.0
+
+
+def _format_receiver(
+    receiver: dict,
+    key_type: str | None = None,
+    key_value: str | None = None,
+) -> dict:
+    """Mantém somente os dados públicos e úteis do destinatário."""
+    owner = receiver.get("owner") if isinstance(receiver.get("owner"), dict) else {}
+    account = receiver.get("account") if isinstance(receiver.get("account"), dict) else {}
+
+    institution = {
+        "name": account.get("participantName"),
+        "ispb": account.get("participant"),
+        "branch": account.get("branch"),
+        "account_number": account.get("accountNumber"),
+        "account_type": account.get("accountType"),
+    }
+
+    return {
+        "name": owner.get("name"),
+        "document": owner.get("taxIdNumber"),
+        "owner_type": owner.get("type"),
+        "same_owner": owner.get("isSameOwner"),
+        "key": key_value or receiver.get("key"),
+        "key_type": key_type or receiver.get("keyType"),
+        "institution": (
+            institution
+            if any(value is not None for value in institution.values())
+            else None
+        ),
+    }
+
+
+def _format_balance_response(result: dict) -> dict:
+    """Resume o saldo e remove do retorno todas as contas internas zeradas."""
+    accounts = result.get("accounts") if isinstance(result.get("accounts"), dict) else {}
+    sources = []
+
+    for source_id, source in accounts.items():
+        if not isinstance(source, dict):
+            continue
+
+        amount = _as_float(source.get("amount", 0))
+        blocked = _as_float(source.get("blocked", 0))
+        if amount == 0 and blocked == 0:
+            continue
+
+        tags = source.get("tags") if isinstance(source.get("tags"), list) else []
+        sources.append({
+            "id": source_id,
+            "amount": amount,
+            "blocked": blocked,
+            "formatted_amount": (
+                source.get("formattedAmount") or _format_brl(source.get("amount", 0))
+            ),
+            "tags": [str(tag) for tag in tags],
+        })
+
+    sources.sort(key=lambda source: abs(source["amount"]), reverse=True)
+
+    available = _as_float(result.get("amount", 0))
+    blocked = _as_float(result.get("blocked", 0))
+    return {
+        "success": True,
+        "message": "Saldo consultado com sucesso.",
+        "wallet_available": bool(result.get("walletOk", False)),
+        "balance": {
+            "available": available,
+            "blocked": blocked,
+            "available_for_discounts": _as_float(
+                result.get("amountForDiscounts", available)
+            ),
+            "currency": str(result.get("currency") or "BRL"),
+            "formatted_available": (
+                result.get("formattedAmount") or _format_brl(available)
+            ),
+            "formatted_blocked": (
+                result.get("formattedBlocked") or _format_brl(blocked)
+            ),
+        },
+        "sources": sources,
+    }
+
+
+def _format_lookup_response(result: dict, key_type: str, key_value: str) -> dict:
+    """Converte a consulta de chave em uma resposta curta e previsível."""
+    receiver = result.get("receiver") if isinstance(result.get("receiver"), dict) else {}
+    return {
+        "success": True,
+        "found": True,
+        "message": "Chave Pix encontrada.",
+        "pix_id": result.get("id"),
+        "receiver": _format_receiver(
+            receiver,
+            key_type=key_type.upper(),
+            key_value=key_value,
+        ),
+    }
 
 
 def _get_receipt_url(result: dict) -> str | None:
@@ -87,8 +196,6 @@ def _get_transaction_status(result: dict) -> str:
 def _format_pix_response(tx: dict) -> dict:
     """Converte a resposta extensa do provedor em um contrato curto e previsível."""
     receiver = tx.get("receiver") if isinstance(tx.get("receiver"), dict) else {}
-    owner = receiver.get("owner") if isinstance(receiver.get("owner"), dict) else {}
-    account = receiver.get("account") if isinstance(receiver.get("account"), dict) else {}
     result = tx.get("result") if isinstance(tx.get("result"), dict) else {}
 
     status = _get_transaction_status(result)
@@ -123,19 +230,11 @@ def _format_pix_response(tx: dict) -> dict:
                 "order_id": result.get("orderId"),
             },
         },
-        "receiver": {
-            "name": owner.get("name"),
-            "document": owner.get("taxIdNumber"),
-            "key": key_value,
-            "key_type": key_type,
-            "institution": {
-                "name": account.get("participantName"),
-                "ispb": account.get("participant"),
-                "branch": account.get("branch"),
-                "account_number": account.get("accountNumber"),
-                "account_type": account.get("accountType"),
-            },
-        },
+        "receiver": _format_receiver(
+            receiver,
+            key_type=key_type,
+            key_value=key_value,
+        ),
     }
 
 
@@ -163,7 +262,7 @@ def _record(tx: dict, tx_type: str) -> TransactionRecord:
         pix_id         = tx.get("pix_id", ""),
         cart_id        = tx.get("cart_id", ""),
         run_id         = tx.get("run_id", ""),
-        timestamp      = tx.get("timestamp", datetime.utcnow().isoformat()),
+        timestamp      = tx.get("timestamp") or datetime.now(timezone.utc).isoformat(),
     )
     _history.insert(0, record)
     # Manter apenas os últimos 500 registros
@@ -303,12 +402,15 @@ def list_participants():
 
 @router.get(
     "/balance",
+    response_model=BalanceResponse,
+    response_model_exclude_none=True,
+    response_class=PrettyJSONResponse,
     summary="Consultar saldo da carteira",
 )
 def get_wallet_balance():
     """Retorna o saldo disponível na carteira RecargaPay."""
     try:
-        return get_balance()
+        return _format_balance_response(get_balance())
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -346,6 +448,9 @@ def generate_integrity_hash(key_value: str):
 
 @router.post(
     "/lookup",
+    response_model=PixLookupResponse,
+    response_model_exclude_none=True,
+    response_class=PrettyJSONResponse,
     summary="Consultar dados do destinatário por chave PIX (sem pagar)",
 )
 def lookup_key(key_type: str, key_value: str):
@@ -355,11 +460,7 @@ def lookup_key(key_type: str, key_value: str):
     """
     try:
         result = post_pix_payment_by_key(key_type, key_value)
-        return {
-            "found":    True,
-            "pix_id":   result.get("id"),
-            "receiver": result.get("receiver", {}),
-        }
+        return _format_lookup_response(result, key_type, key_value)
     except PixError as e:
         raise HTTPException(status_code=e.status_code, detail={
             "code":    e.code,

@@ -375,7 +375,7 @@ def get_creditcards() -> dict:
 
 def get_balance() -> dict:
     r = session.get(
-        f"{BASE_URL}/api/v2/users/me/balance",
+        f"{BASE_URL}/api/0.1/users/me/balance",
         headers=_h("https://recargapay.com.br/", "/"),
         timeout=30,
     )

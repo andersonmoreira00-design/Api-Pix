@@ -1,6 +1,7 @@
 import uuid
-from datetime import datetime
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
+from fastapi import APIRouter, HTTPException
 
 from app.core import (
     fluxo_pix_por_chave,
@@ -13,8 +14,6 @@ from app.core import (
     get_balance,
     build_integrity_hash,
     PixError,
-    RECEIVER_PERSON_ID,
-    RECEIVER_ACCOUNT_ID,
 )
 from app.models.schemas import (
     PixKeyRequest,
@@ -24,11 +23,120 @@ from app.models.schemas import (
     TransactionRecord,
     IntegrityHashResponse,
 )
+from app.responses import PrettyJSONResponse
 
 router = APIRouter(prefix="/pix", tags=["Pagamentos PIX"])
 
 # Histórico em memória (persiste enquanto o servidor estiver rodando)
 _history: list[TransactionRecord] = []
+
+
+def _format_brl(amount: str) -> str:
+    """Formata um valor decimal como moeda brasileira sem caracteres especiais."""
+    try:
+        value = Decimal(str(amount)).quantize(Decimal("0.01"))
+    except (InvalidOperation, TypeError, ValueError):
+        return f"R$ {amount}"
+
+    formatted = f"{value:,.2f}"
+    formatted = formatted.replace(",", "_").replace(".", ",").replace("_", ".")
+    return f"R$ {formatted}"
+
+
+def _get_receipt_url(result: dict) -> str | None:
+    """Extrai somente o link do comprovante do retorno interno do provedor."""
+    actions = result.get("callToActions", [])
+    if not isinstance(actions, list):
+        return None
+
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        url = action.get("url")
+        right_url = (
+            action.get("right", {}).get("url")
+            if isinstance(action.get("right"), dict)
+            else None
+        )
+        candidate = right_url or url
+        if candidate and ("voucher" in candidate or "receipt" in candidate):
+            return candidate
+    return None
+
+
+def _get_transaction_status(result: dict) -> str:
+    """Normaliza os diferentes estados internos em um status estável da API."""
+    status = str(result.get("status", "")).lower()
+    action = str(result.get("action", "")).lower()
+    title = str(result.get("title", "")).lower()
+
+    if (
+        result.get("done") is True
+        or status in {"1", "100", "101", "done", "approved", "completed", "success"}
+        or "pix feito" in title
+        or "pix realizado" in title
+    ):
+        return "completed"
+    if action == "require-pin":
+        return "pending_authentication"
+    if status in {"-1", "400", "401", "403", "422", "failed", "error", "rejected"}:
+        return "failed"
+    return "processing"
+
+
+def _format_pix_response(tx: dict) -> dict:
+    """Converte a resposta extensa do provedor em um contrato curto e previsível."""
+    receiver = tx.get("receiver") if isinstance(tx.get("receiver"), dict) else {}
+    owner = receiver.get("owner") if isinstance(receiver.get("owner"), dict) else {}
+    account = receiver.get("account") if isinstance(receiver.get("account"), dict) else {}
+    result = tx.get("result") if isinstance(tx.get("result"), dict) else {}
+
+    status = _get_transaction_status(result)
+    messages = {
+        "completed": "Pix realizado com sucesso.",
+        "pending_authentication": "Pix aguardando autenticacao.",
+        "failed": "Nao foi possivel concluir o Pix.",
+        "processing": "Pix enviado e em processamento.",
+    }
+
+    key_value = tx.get("key_value") or receiver.get("key")
+    key_type = tx.get("key_type") or receiver.get("keyType")
+    currency = str(result.get("currency") or "BRL")
+
+    return {
+        "success": bool(tx.get("success")) and status != "failed",
+        "message": messages[status],
+        "transaction": {
+            "status": status,
+            "amount": {
+                "value": str(tx.get("amount", "0.00")),
+                "currency": currency,
+                "formatted": _format_brl(tx.get("amount", "0.00")),
+            },
+            "payment_method": tx.get("payment_method", "WALLET"),
+            "receipt_url": _get_receipt_url(result),
+            "created_at": tx.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+            "references": {
+                "pix_id": tx.get("pix_id", ""),
+                "cart_id": tx.get("cart_id", ""),
+                "run_id": tx.get("run_id", ""),
+                "order_id": result.get("orderId"),
+            },
+        },
+        "receiver": {
+            "name": owner.get("name"),
+            "document": owner.get("taxIdNumber"),
+            "key": key_value,
+            "key_type": key_type,
+            "institution": {
+                "name": account.get("participantName"),
+                "ispb": account.get("participant"),
+                "branch": account.get("branch"),
+                "account_number": account.get("accountNumber"),
+                "account_type": account.get("accountType"),
+            },
+        },
+    }
 
 
 def _record(tx: dict, tx_type: str) -> TransactionRecord:
@@ -37,8 +145,8 @@ def _record(tx: dict, tx_type: str) -> TransactionRecord:
     owner    = receiver.get("owner", {}) if isinstance(receiver, dict) else {}
     account  = receiver.get("account", {}) if isinstance(receiver, dict) else {}
     result   = tx.get("result", {})
-    status   = str(result.get("status", result.get("action", "unknown"))).lower()
-    success  = status in ("done", "approved", "completed", "success", "1", "true")
+    status   = _get_transaction_status(result)
+    success  = status == "completed"
 
     record = TransactionRecord(
         id             = str(uuid.uuid4()),
@@ -71,6 +179,8 @@ def _record(tx: dict, tx_type: str) -> TransactionRecord:
 @router.post(
     "/key",
     response_model=PixResponse,
+    response_model_exclude_none=True,
+    response_class=PrettyJSONResponse,
     summary="Pagar PIX por chave (CPF, CNPJ, PHONE, EMAIL, EVP)",
 )
 def pagar_por_chave(req: PixKeyRequest):
@@ -97,7 +207,7 @@ def pagar_por_chave(req: PixKeyRequest):
             payment_method = req.payment_method,
         )
         _record(result, "key")
-        return PixResponse(**result)
+        return _format_pix_response(result)
     except PixError as e:
         raise HTTPException(status_code=e.status_code, detail={
             "code":    e.code,
@@ -111,6 +221,8 @@ def pagar_por_chave(req: PixKeyRequest):
 @router.post(
     "/contact",
     response_model=PixResponse,
+    response_model_exclude_none=True,
+    response_class=PrettyJSONResponse,
     summary="Pagar PIX para contato recente (personId + accountId)",
 )
 def pagar_por_contato(req: PixContactRequest):
@@ -128,7 +240,7 @@ def pagar_por_contato(req: PixContactRequest):
             payment_method = req.payment_method,
         )
         _record(result, "contact")
-        return PixResponse(**result)
+        return _format_pix_response(result)
     except PixError as e:
         raise HTTPException(status_code=e.status_code, detail={
             "code":    e.code,

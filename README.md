@@ -50,6 +50,48 @@ curl -X POST https://sua-api.railway.app/pix/key \
 curl https://sua-api.railway.app/status
 ```
 
+### Resposta do pagamento
+
+Os endpoints `POST /pix/key` e `POST /pix/contact` retornam somente os dados úteis
+da operação. O conteúdo interno do provedor, como banners e configurações de tela,
+não é exposto.
+
+```json
+{
+  "success": true,
+  "message": "Pix realizado com sucesso.",
+  "transaction": {
+    "status": "completed",
+    "amount": {
+      "value": "0.01",
+      "currency": "BRL",
+      "formatted": "R$ 0,01"
+    },
+    "payment_method": "WALLET",
+    "receipt_url": "https://recargapay.com.br/user/history/1234567890/voucher",
+    "created_at": "2026-09-12T17:11:51.687948",
+    "references": {
+      "pix_id": "pix-exemplo",
+      "cart_id": "cart-exemplo",
+      "run_id": "run-exemplo",
+      "order_id": 1234567890
+    }
+  },
+  "receiver": {
+    "name": "Cliente Exemplo",
+    "document": "***.456.789-**",
+    "key": "12345678909",
+    "key_type": "CPF",
+    "institution": {
+      "name": "PICPAY",
+      "ispb": "22896431",
+      "branch": "***",
+      "account_number": "*****"
+    }
+  }
+}
+```
+
 ## Renovação Automática de Tokens
 
 A API renova o Bearer Token automaticamente em 2 etapas:

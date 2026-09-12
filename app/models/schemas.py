@@ -1,6 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, Any, Dict, List
-from datetime import datetime
+from typing import Optional, List
 from enum import Enum
 
 
@@ -58,34 +57,49 @@ class RenewTokenRequest(BaseModel):
 # RESPONSES
 # ==============================================================================
 
-class ReceiverOwner(BaseModel):
-    name:          Optional[str] = None
-    taxIdNumber:   Optional[str] = None
+class MoneyInfo(BaseModel):
+    value:     str
+    currency:  str = "BRL"
+    formatted: str
 
-class ReceiverAccount(BaseModel):
-    participantName: Optional[str] = None
-    branch:          Optional[str] = None
-    accountNumber:   Optional[str] = None
-    accountType:     Optional[str] = None
 
-class ReceiverInfo(BaseModel):
-    owner:   Optional[ReceiverOwner]   = None
-    account: Optional[ReceiverAccount] = None
+class InstitutionInfo(BaseModel):
+    name:           Optional[str] = None
+    ispb:           Optional[str] = None
+    branch:         Optional[str] = None
+    account_number: Optional[str] = None
+    account_type:   Optional[str] = None
+
+
+class PixReceiverInfo(BaseModel):
+    name:        Optional[str] = None
+    document:    Optional[str] = None
+    key:         Optional[str] = None
+    key_type:    Optional[str] = None
+    institution: Optional[InstitutionInfo] = None
+
+
+class PixReferences(BaseModel):
+    pix_id:   str
+    cart_id:  str
+    run_id:   str
+    order_id: Optional[int | str] = None
+
+
+class PixTransactionInfo(BaseModel):
+    status:         str
+    amount:         MoneyInfo
+    payment_method: str
+    receipt_url:    Optional[str] = None
+    created_at:     str
+    references:     PixReferences
+
 
 class PixResponse(BaseModel):
-    success:        bool
-    pix_id:         str
-    cart_id:        str
-    run_id:         str
-    amount:         str
-    payment_method: str
-    receiver:       Optional[Dict[str, Any]] = None
-    result:         Optional[Dict[str, Any]] = None
-    timestamp:      str
-    key_type:       Optional[str] = None
-    key_value:      Optional[str] = None
-    person_id:      Optional[str] = None
-    account_id:     Optional[str] = None
+    success:     bool
+    message:     str
+    transaction: PixTransactionInfo
+    receiver:    Optional[PixReceiverInfo] = None
 
 
 class TokenStatus(BaseModel):
